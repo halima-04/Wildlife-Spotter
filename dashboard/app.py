@@ -1,7 +1,7 @@
 """Kenyan Wildlife Spotter - interactive dashboard (Streamlit).
 
 Run from the project root:   streamlit run dashboard/app.py
-Tabs: Overview | Sightings map | Species explorer | Model comparison | Spot an animal (live prediction + Grad-CAM)
+Tabs: Overview | Sightings map | Species explorer | Model comparison | Spot an animal | Stress test (night / distance / haze)
 """
 import json
 import sys
@@ -50,7 +50,7 @@ st.markdown('<div class="hero"><h1>🦁 Kenyan Wildlife Spotter</h1>'
             'DSA 4050 Term Project · USIU-Africa</div></div>', unsafe_allow_html=True)
 st.write("")
 
-tabs = st.tabs(["📊 Overview", "🗺️ Sightings map", "🖼️ Species explorer", "🏆 Model comparison", "🔍 Spot an animal"])
+tabs = st.tabs(["📊 Overview", "🗺️ Sightings map", "🖼️ Species explorer", "🏆 Model comparison", "🔍 Spot an animal", "🌙 Stress test"])
 
 # ---------------------------------------------------------------- overview
 with tabs[0]:
@@ -204,3 +204,153 @@ with tabs[4]:
                             width="stretch")
             if probs[top] < 0.6:
                 st.warning("Low confidence - the animal may be partly hidden, far away, or not one of the trained species.")
+
+
+# ---------------------------------------------------------------- stress test (night, distance, surroundings)
+cached_deep = st.cache_resource(load_deep)
+
+
+def predict_probs(model, img):
+    import torch
+    from torchvision import transforms
+    tf = transforms.Compose([transforms.Resize((IMG_SIZE, IMG_SIZE)), transforms.ToTensor(),
+                             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+    with torch.no_grad():
+        return torch.softmax(model(tf(img).unsqueeze(0)), 1)[0].numpy()
+
+
+def scan_for_animals(model, classes, img, thr, max_windows=80):
+    """Experimental: slide square windows of 3 sizes over the photo, classify each, keep confident ones."""
+    import torch
+    from PIL import ImageDraw
+    from torchvision import transforms
+    tf = transforms.Compose([transforms.Resize((IMG_SIZE, IMG_SIZE)), transforms.ToTensor(),
+                             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+    w, h = img.size
+    boxes = []
+    for frac in (1.0, 0.5, 0.33):
+        win = int(min(w, h) * frac)
+        stride = max(1, win // 2)
+        xs = sorted(set(list(range(0, max(1, w - win + 1), stride)) + [max(0, w - win)]))
+        ys = sorted(set(list(range(0, max(1, h - win + 1), stride)) + [max(0, h - win)]))
+        boxes += [(x, y, x + win, y + win) for y in ys for x in xs]
+    boxes = boxes[:max_windows]
+    probs = []
+    with torch.no_grad():
+        for i in range(0, len(boxes), 32):
+            batch = torch.stack([tf(img.crop(b)) for b in boxes[i:i + 32]])
+            probs += torch.softmax(model(batch), 1).numpy().tolist()
+    probs = np.array(probs)
+    order = np.argsort(-probs.max(1))
+    kept = []
+    for i in order:
+        if probs[i].max() < thr:
+            break
+        bx = boxes[i]
+        ok = True
+        for k in kept:
+            ix = max(0, min(bx[2], k[0][2]) - max(bx[0], k[0][0])); iy = max(0, min(bx[3], k[0][3]) - max(bx[1], k[0][1]))
+            inter = ix * iy
+            union = (bx[2] - bx[0]) * (bx[3] - bx[1]) + (k[0][2] - k[0][0]) * (k[0][3] - k[0][1]) - inter
+            if inter / union > 0.3:
+                ok = False; break
+        if ok:
+            kept.append((bx, classes[int(probs[i].argmax())], float(probs[i].max())))
+    out = img.copy()
+    d = ImageDraw.Draw(out)
+    for bx, name, p in kept[:8]:
+        d.rectangle(bx, outline=(255, 140, 0), width=max(2, w // 200))
+        d.text((bx[0] + 4, bx[1] + 4), f"{name} {p:.0%}", fill=(255, 255, 255))
+    return out, kept
+
+
+with tabs[5]:
+    sys.path.insert(0, str(ROOT / "src"))
+    from robustness import TIMES_OF_DAY, stress  # noqa: E402  (PIL + numpy only)
+
+    st.subheader("Stress test: can the model still spot the animal?")
+    st.caption("Night, camera-trap infrared, distance and dusty haze are SIMULATED on the photo you choose. "
+               "They are for testing; real night photos are harder.")
+    stress_models = sorted(p for p in MODELS_DIR.glob("*.pt") if p.name != "best_model.pt")
+    if not stress_models:
+        st.warning("No trained deep model found. Run `python src/04_train_deep.py` (and `06_train_robust.py`).")
+    else:
+        src_choice = st.radio("Photo", ["Upload my own", "Random photo from the dataset"], horizontal=True)
+        base_img = None
+        if src_choice == "Upload my own":
+            up2 = st.file_uploader("Upload a wildlife photo", type=["jpg", "jpeg", "png"], key="stress_up")
+            if up2:
+                base_img = Image.open(up2).convert("RGB")
+        else:
+            if st.button("🎲 New random photo") or "stress_pick" not in st.session_state:
+                st.session_state["stress_pick"] = int(np.random.randint(0, len(meta)))
+            row = meta.iloc[min(st.session_state["stress_pick"], len(meta) - 1)]
+            try:
+                base_img = Image.open(RAW_DIR / row["file"]).convert("RGB")
+                st.caption(f"Dataset photo, true species: **{row['species']}**")
+            except Exception:
+                st.info("Dataset photos are not on this computer (data/raw is not in Git). Upload a photo instead.")
+
+        c1, c2, c3 = st.columns(3)
+        tod = c1.select_slider("Time of day", TIMES_OF_DAY, value="Day")
+        size_pct = c2.slider("Animal size in frame (%)", 15, 100, 100, step=5, help="Lower = animal further away")
+        haze_lv = c3.slider("Dust / haze", 0.0, 0.7, 0.0, step=0.05)
+        default_pick = [p for p in stress_models if p.stem in ("mobilenet_v2", "mobilenet_v2_robust")] or stress_models[:1]
+        chosen_models = st.multiselect("Models to compare", stress_models, default=default_pick, format_func=lambda p: p.stem)
+
+        if base_img is not None and chosen_models:
+            shown = stress(base_img, tod, size_pct / 100, haze_lv, seed=1)
+            a, b = st.columns(2)
+            a.image(base_img, caption="Original", width="stretch")
+            b.image(shown, caption=f"{tod}, animal at {size_pct}% size, haze {haze_lv:.2f}", width="stretch")
+            cols = st.columns(len(chosen_models))
+            for col, path in zip(cols, chosen_models):
+                model, classes, _ = cached_deep(path)
+                probs = predict_probs(model, shown)
+                top = int(probs.argmax())
+                col.metric(path.stem, classes[top].title(), f"{probs[top]:.0%} confident")
+                col.plotly_chart(px.bar(x=probs, y=classes, orientation="h", labels={"x": "probability", "y": ""},
+                                        color_discrete_sequence=[TEAL]).update_layout(height=260, margin=dict(t=10, b=10),
+                                        yaxis={"categoryorder": "total ascending"}), width="stretch")
+            st.markdown("##### Scan for distant animals (experimental)")
+            st.caption("Slides windows of three sizes over the image and keeps confident detections. "
+                       "Background patches can be mislabelled, so raise the threshold if you see false boxes.")
+            if st.checkbox("Run the scan on the stressed photo"):
+                thr = st.slider("Confidence threshold", 0.5, 0.99, 0.9, step=0.01)
+                scan_model, scan_classes, _ = cached_deep(chosen_models[-1])
+                scanned, found = scan_for_animals(scan_model, scan_classes, shown, thr)
+                st.image(scanned, caption=f"Scan with {chosen_models[-1].stem}", width="stretch")
+                if not found:
+                    st.info("No confident animal found. Lower the threshold or use a larger animal size.")
+
+    st.divider()
+    st.subheader("Measured robustness (test set)")
+    rob_path = OUT_DIR / "robustness.json"
+    if not rob_path.exists():
+        st.info("Run `python src/05_robustness_eval.py` (in Colab) and copy `outputs/robustness.json` here to see results.")
+    else:
+        rob = json.loads(rob_path.read_text())
+        conds = rob.get("conditions", {})
+        if conds:
+            rows = [{"model": m, "condition": c, "accuracy": a} for m, d in conds.items() for c, a in d.items()]
+            rdf = pd.DataFrame(rows)
+            st.plotly_chart(px.bar(rdf, x="condition", y="accuracy", color="model", barmode="group",
+                                   title="Accuracy under simulated field conditions",
+                                   color_discrete_sequence=[NAVY, TEAL, "#D97706", "#94A3B8"]).update_yaxes(tickformat=".0%", range=[0, 1]),
+                            width="stretch")
+        regs = rob.get("regions", {})
+        if regs:
+            rr = pd.DataFrame([{"model": m, "region": r, "accuracy": v["accuracy"], "photos": v["n"]}
+                               for m, d in regs.items() for r, v in d.items()])
+            st.plotly_chart(px.bar(rr, x="region", y="accuracy", color="model", barmode="group", hover_data=["photos"],
+                                   title="Accuracy by Kenyan region (regions with 10+ test photos)",
+                                   color_discrete_sequence=[NAVY, TEAL, "#D97706", "#94A3B8"]).update_yaxes(tickformat=".0%", range=[0, 1]),
+                            width="stretch")
+        hold = rob.get("holdout", {})
+        if hold:
+            st.markdown("**Unseen-area test:** model trained without photos from a region, then tested on that region.")
+            st.dataframe(pd.DataFrame(hold).T.rename(columns={"unseen_region_accuracy": "unseen area", "seen_regions_accuracy": "seen areas"})
+                         .style.format({"unseen area": "{:.1%}", "seen areas": "{:.1%}"}), width="stretch")
+        ex = OUT_DIR / "stress_examples.png"
+        if ex.exists():
+            st.image(str(ex), caption="What the simulated conditions look like", width="stretch")

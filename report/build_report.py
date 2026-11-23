@@ -41,7 +41,7 @@ def f1(model):
     return f"{res[model]['macro_f1']:.3f}" if model in res else ph("F1")
 
 
-models = {k: v for k, v in res.items() if k != "best"}
+models = {k: v for k, v in res.items() if k != "best" and not k.endswith("_robust")}
 deep = {k: v for k, v in models.items() if v["family"] == "Deep Learning"}
 classical = {k: v for k, v in models.items() if v["family"] == "Classical ML"}
 best_deep = max(deep, key=lambda k: deep[k]["accuracy"]) if deep else None
@@ -52,6 +52,37 @@ species_list = ", ".join(sorted(meta["species"].unique())) if meta is not None e
 _diff = (deep[best_deep]["accuracy"] - classical[best_cl]["accuracy"]) * 100 if best_deep and best_cl else None
 gap = f"{abs(_diff):.1f}" if _diff is not None else ph("gap")
 DL_WINS = _diff is not None and _diff > 0
+
+# ------------------------------------------------------------------ robustness results (step 5 / 6)
+rob_path = ROOT / "outputs" / "robustness.json"
+rob = json.loads(rob_path.read_text()) if rob_path.exists() else {}
+COND_LABELS = {"clean": "Clean", "night": "Night", "infrared": "Infrared trap", "far": "Far (40% of frame)",
+               "very_far": "Very far (22%)", "far_night": "Far + night", "haze": "Dust haze", "golden_hour": "Golden hour"}
+rc = rob.get("conditions", {})
+BASE, ROBUST = "mobilenet_v2", "mobilenet_v2_robust"
+base_c, robust_c = rc.get(BASE), rc.get(ROBUST)
+HARD = [c for c in COND_LABELS if c != "clean"]
+if base_c and robust_c:
+    worst = min(HARD, key=lambda c: base_c[c])
+    mean_b = sum(base_c[c] for c in HARD) / len(HARD)
+    mean_r = sum(robust_c[c] for c in HARD) / len(HARD)
+    rob_result = (f"On clean photos the baseline MobileNetV2 scored {base_c['clean']:.1%}, but its accuracy fell to "
+                  f"{base_c[worst]:.1%} in the hardest condition ({COND_LABELS[worst].lower()}) and averaged {mean_b:.1%} "
+                  f"over the seven harder conditions. The robust model averaged {mean_r:.1%} over the same conditions, a change of "
+                  f"{(mean_r - mean_b) * 100:+.1f} percentage points, and scored {robust_c['clean']:.1%} on clean photos "
+                  f"({(robust_c['clean'] - base_c['clean']) * 100:+.1f} points). Table 2 gives every condition.")
+elif base_c:
+    rob_result = ph("Run 06_train_robust.py and 05_robustness_eval.py again to compare with a robust model. Baseline only so far.")
+else:
+    rob_result = ph("Run 05_robustness_eval.py and describe the results: which conditions hurt most, and did the robust model help?")
+hold = rob.get("holdout", {})
+if hold:
+    _name, _h = next(iter(hold.items()))
+    hold_result = (f"In the unseen-area test I removed all {_name} photos from training. On those photos the model scored "
+                   f"{_h['unseen_region_accuracy']:.1%}, against {_h['seen_regions_accuracy']:.1%} on regions it had seen, "
+                   "which shows how well it copes with a new habitat.")
+else:
+    hold_result = ph("Optional: run 06_train_robust.py --holdout-region \"Maasai Mara\" and report accuracy on the unseen area vs seen areas.")
 
 # ------------------------------------------------------------------ the write-up text
 SECTIONS = [
@@ -83,7 +114,7 @@ SECTIONS = [
         "I split the data once into 70% training, 15% validation and 15% test, stratified by species and saved to disk, "
         "so every model is evaluated on exactly the same unseen images. "
         "iNaturalist already blurs the coordinates of threatened species, which is important for ethics because exact "
-        "locations of animals like lions or rhinos could help poachers (see Section 6).",
+        "locations of animals like lions or rhinos could help poachers (see Section 7).",
     ]),
     ("3. Methodology: algorithms tested", [
         "I trained two families of models and judged them mainly on test accuracy, with macro-F1 as a second check because "
@@ -114,28 +145,44 @@ SECTIONS = [
     ]),
     ("5. Interactive dashboard", [
         "I built the dashboard in Streamlit (dashboard/app.py) so results can be explored rather than read from a static table. "
-        "It has five tabs: an overview with key numbers and class balance; a map of Kenyan sightings that can be filtered "
+        "It has six tabs: an overview with key numbers and class balance; a map of Kenyan sightings that can be filtered "
         "by species; a species explorer showing sample photos; a model comparison tab with accuracy bars, learning curves "
         "and confusion matrices; and a live \"Spot an animal\" tab where anyone uploads a photo and gets the predicted species "
         "with probabilities. That last tab also draws a Grad-CAM heat map (Selvaraju et al., 2017) showing the pixels the "
         "network relied on. This helps check that the model looks at the animal rather than background cues such as "
-        "a savannah scene or a vehicle, and it makes the model easier to trust and explain.",
+        "a savannah scene or a vehicle, and it makes the model easier to trust and explain. The sixth tab, Stress test, "
+        "applies night, infrared, distance and haze to any photo with sliders, compares the baseline and robust models "
+        "side by side, and includes an experimental scan that slides windows over the image to find small, distant animals.",
     ]),
-    ("6. Limitations and ethics", [
-        "The dataset covers only a few species and mostly well-lit daytime photos taken by people, which differ from "
-        "night-time infrared camera-trap images, so accuracy in the field would be lower without retraining on camera-trap "
-        "data. Citizen-science photos are biased towards accessible parks and charismatic animals. The model can only "
+    ("6. Robustness: night, distance and surroundings", [
+        "A model trained on clear daytime photos can fail where monitoring really happens: at night, when the animal is far "
+        "away, or in a different habitat. I tested this directly. 05_robustness_eval.py re-scores the same test photos under "
+        "seven simulated conditions: night (dark, blue cast, noise), camera-trap infrared (greyscale, bright centre, grain), "
+        "the animal shrunk to 40% and 22% of the frame, distance and night together, dust haze, and low golden-hour light. "
+        "I also grouped sightings into six Kenyan regions from their GPS coordinates (Maasai Mara, Nakuru-Naivasha, Nairobi "
+        "National Park, Amboseli, Tsavo, Laikipia-Samburu) to compare accuracy by habitat. To improve robustness, "
+        "06_train_robust.py retrains MobileNetV2 with these conditions applied randomly to 60% of the training images, and "
+        "chooses its best weights on a fixed mix of conditions.",
+        rob_result,
+        "TABLE2",
+        hold_result,
+        "These conditions are simulations, so the results show a trend rather than real field performance. Real camera-trap "
+        "images (for example Snapshot Serengeti) would be the next test.",
+    ]),
+    ("7. Limitations and ethics", [
+        "The dataset covers only a few species and mostly well-lit daytime photos taken by people. My night, distance and "
+        "haze tests are simulated, so real camera-trap images could still be harder without retraining on them. Citizen-science photos are biased towards accessible parks and charismatic animals. The model can only "
         "predict the species it was trained on and will confidently mislabel an unknown animal, so the dashboard warns "
         "when confidence is low. On ethics, I used open-licensed data with attribution kept in the metadata, and any "
         "real deployment should avoid publishing precise locations of endangered animals.",
     ]),
-    ("7. Conclusion", [
+    ("8. Conclusion", [
         f"This project mined a Kenyan wildlife dataset, compared {len(models) if models else ph('N')} models, and delivered "
         "an interactive tool for species identification. "
         + ("Fine-tuned deep networks outperformed classical machine learning, which justifies deep learning for this problem. "
            if DL_WINS else ph("Summarise your finding on deep learning vs classical ML. "))
         + "Future work includes adding more species and "
-        "night-time images, detecting several animals per photo with an object detector such as YOLO, and deploying "
+        "real night-time images, detecting several animals per photo with an object detector such as YOLO, and deploying "
         "MobileNetV2 on a low-power camera.",
     ]),
 ]
@@ -234,6 +281,26 @@ for heading, paras in SECTIONS:
             doc.add_paragraph()
             body_words += 4 * (1 + len(rows)) if rows else 6
             continue
+        if text == "TABLE2":
+            if not base_c:
+                continue
+            cap = doc.add_paragraph()
+            cr = cap.add_run("Table 2. Test accuracy under simulated field conditions")
+            cr.bold, cr.font.size = True, Pt(10)
+            heads = ["Condition", "Baseline"] + (["Robust"] if robust_c else [])
+            t = doc.add_table(rows=1 + len(COND_LABELS), cols=len(heads))
+            t.style = "Table Grid"
+            for i, h in enumerate(heads):
+                c = t.rows[0].cells[i]; c.text = ""
+                run = c.paragraphs[0].add_run(h); run.bold = True; run.font.color.rgb = RGBColor(255, 255, 255)
+                shade(c, "1E3A5F")
+            for i, (key, label) in enumerate(COND_LABELS.items(), 1):
+                vals = [label, f"{base_c[key]:.1%}"] + ([f"{robust_c[key]:.1%}"] if robust_c else [])
+                for j, val in enumerate(vals):
+                    t.rows[i].cells[j].text = val
+            doc.add_paragraph()
+            body_words += len(heads) * (1 + len(COND_LABELS))
+            continue
         p = doc.add_paragraph()
         add_text(p, text)
         body_words += len(text.split())
@@ -248,7 +315,8 @@ for ref in REFERENCES:
 
 # figures (if the scripts have produced them)
 figs = [("outputs/class_balance.png", "Figure 1. Images per species"),
-        (f"outputs/cm_{best_deep}.png" if best_deep else "", "Figure 2. Confusion matrix of the best deep model")]
+        (f"outputs/cm_{best_deep}.png" if best_deep else "", "Figure 2. Confusion matrix of the best deep model"),
+        ("outputs/stress_examples.png", "Figure 3. Simulated field conditions used in the robustness tests")]
 for path, cap in figs:
     if path and (ROOT / path).exists():
         doc.add_picture(str(ROOT / path), width=Inches(4.2))

@@ -7,6 +7,7 @@ from pathlib import Path
 ap = argparse.ArgumentParser()
 ap.add_argument("--quick", action="store_true", help="few images + 2+2 epochs, for a fast trial")
 ap.add_argument("--per-species", type=int, default=250)
+ap.add_argument("--robust", action="store_true", help="also train the robust model and run the robustness tests")
 a = ap.parse_args()
 
 src = Path(__file__).parent / "src"
@@ -16,6 +17,8 @@ steps = [
     ["03_train_classical.py"],
     ["04_train_deep.py"] + (["--quick"] if a.quick else []),
 ]
+if a.robust:
+    steps += [["06_train_robust.py"] + (["--quick"] if a.quick else []), ["05_robustness_eval.py"]]
 for s in steps:
     print(f"\n######## {' '.join(s)}")
     subprocess.run([sys.executable, str(src / s[0]), *s[1:]], check=True, cwd=src)
