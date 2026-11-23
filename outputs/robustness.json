@@ -1,0 +1,86 @@
+{
+  "conditions": {
+    "mobilenet_v2_robust": {
+      "clean": 0.9225589225589226,
+      "night": 0.8451178451178452,
+      "infrared": 0.8282828282828283,
+      "far": 0.7104377104377104,
+      "very_far": 0.5252525252525253,
+      "far_night": 0.5117845117845118,
+      "haze": 0.8552188552188552,
+      "golden_hour": 0.9158249158249159
+    },
+    "mobilenet_v2": {
+      "clean": 0.898989898989899,
+      "night": 0.6430976430976431,
+      "infrared": 0.7643097643097643,
+      "far": 0.5555555555555556,
+      "very_far": 0.32323232323232326,
+      "far_night": 0.30303030303030304,
+      "haze": 0.7811447811447811,
+      "golden_hour": 0.8855218855218855
+    }
+  },
+  "regions": {
+    "mobilenet_v2": {
+      "Amboseli": {
+        "accuracy": 0.9433962264150944,
+        "n": 53
+      },
+      "Laikipia-Samburu": {
+        "accuracy": 0.8285714285714286,
+        "n": 35
+      },
+      "Maasai Mara": {
+        "accuracy": 0.8571428571428571,
+        "n": 98
+      },
+      "Nairobi NP": {
+        "accuracy": 0.9473684210526315,
+        "n": 19
+      },
+      "Nakuru-Naivasha": {
+        "accuracy": 0.9411764705882353,
+        "n": 68
+      },
+      "Tsavo": {
+        "accuracy": 0.9444444444444444,
+        "n": 18
+      }
+    },
+    "mobilenet_v2_robust": {
+      "Amboseli": {
+        "accuracy": 0.9433962264150944,
+        "n": 53
+      },
+      "Laikipia-Samburu": {
+        "accuracy": 0.8571428571428571,
+        "n": 35
+      },
+      "Maasai Mara": {
+        "accuracy": 0.9183673469387755,
+        "n": 98
+      },
+      "Nairobi NP": {
+        "accuracy": 0.8947368421052632,
+        "n": 19
+      },
+      "Nakuru-Naivasha": {
+        "accuracy": 0.9558823529411765,
+        "n": 68
+      },
+      "Tsavo": {
+        "accuracy": 0.9444444444444444,
+        "n": 18
+      }
+    }
+  },
+  "holdout": {
+    "Maasai Mara": {
+      "unseen_region_accuracy": 0.8687002652519894,
+      "seen_regions_accuracy": 0.914572864321608,
+      "n_unseen": 754,
+      "model": "mobilenet_v2"
+    }
+  }
+}
